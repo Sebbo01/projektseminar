@@ -22,6 +22,8 @@ as-is here so downstream code sees the real data:
   * timestamps are minute-offset (e.g. 13:01) and descending in file order
   * occasional negative flow / power readings (metering noise)
   * per-meter history starts/ends at different dates (2021-2025)
+  * a few exports omit the spread column; it is derived from
+    Vorlauf minus Rücklauf (see _derive_temperature_difference)
 
 ``materialize_meters`` writes one clean ``<Zählernummer>.csv`` per meter
 into a target directory, which is exactly the layout that
@@ -88,6 +90,25 @@ def discover_meter_files(data_dir: Path = DATA_DIR) -> dict[int, list[Path]]:
     return meters
 
 
+_DT = "Temperature difference (°C)"
+_VL = "Flow temperature (°C)"
+_RL = "Return temperature (°C)"
+
+
+def _derive_temperature_difference(df: pd.DataFrame) -> pd.DataFrame:
+    """Add the spread column when an export omits it (e.g. 81050517).
+
+    Most exports ship it, a few do not. It is Vorlauf minus Rücklauf by
+    definition, so deriving it is exact - not an estimate - and keeps the
+    meter in the pipeline instead of failing the whole run on one file.
+    """
+    if _DT in df.columns or not {_VL, _RL} <= set(df.columns):
+        return df
+    df = df.copy()
+    df[_DT] = df[_VL] - df[_RL]
+    return df
+
+
 def load_meter_timeseries(zaehlernummer: int,
                           data_dir: Path = DATA_DIR) -> pd.DataFrame:
     """Load, merge and clean all export files for one meter.
@@ -105,6 +126,7 @@ def load_meter_timeseries(zaehlernummer: int,
     frames = []
     for path in meters[zaehlernummer]:
         df = pd.read_csv(path, parse_dates=["Timestamp"])
+        df = _derive_temperature_difference(df)
         missing = [c for c in SCHEMA if c not in df.columns]
         if missing:
             raise ValueError(
